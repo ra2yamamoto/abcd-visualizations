@@ -1,0 +1,714 @@
+# Cross-lagged Panel Modeling of Child Variables
+
+```{r}
+################################################################
+#
+# Cross-lagged Network Analysis of ABCD Data
+# 
+# Description: Analyzes temporal relationships using LASSO-based network models across 5 timepoints.
+#
+# Functions Overview:
+# 1. Data Preparation
+#    Handles data import and cleaning for ABCD dataset. Converts
+#    longitudinal data to wide format for network analysis.
+#    Returns: Clean dataset ready for model fitting
+#
+# 2. Model Fitting
+#    Implements LASSO regression for each temporal transition.
+#    Uses cross-validation for parameter selection. 
+#    Returns: Coefficient matrices for network construction
+#
+# 3. Network Analysis
+#    Processes model outputs into network metrics. Calculates
+#    various centrality measures to identify key symptoms.
+#    Returns: Network metrics and edge weights
+#
+# 4. Visualization
+#    Creates network viz + plots.
+#    Generates both static networks and temporal evolution plots.
+#    Returns: Network plots and centrality visualizations
+# 
+# ANALYSIS PLAN:
+# 1. Data Preparation
+#    - Load required libraries
+#    - Import ABCD dataset with 5 timepoints
+#    - Clean and reshape data into wide format
+#    - Create design matrix for variable mapping
+#
+# 2. Model Fitting
+#    - Fit LASSO models for each transition
+#    - Extract coefficients for network edges
+#    - Validate numeric data at each step
+#
+# 3. Network Analysis
+#    - Calculate centrality metrics:
+#      * InStrength/OutStrength
+#      * Betweenness
+#      * Closeness
+#    - Export edge values and metrics to CSV
+#
+# 4. Visualization
+#    - Create network plots for each transition
+#    - Generate centrality plots
+#    - Make standardized centrality plots
+# 
+# 5. Bootstrapping with bootnet
+#    - For waves 0→1, 1→2, 2→3:
+#      * Case-dropping bootstrap (nBoots = 2500, type = "case") 
+#        * Statistics: edge weights, strength, inStrength, outStrength, betweenness, closeness  
+#        * Save each “case” bootstrap to boot_data/<wave>_case_boot.RData  
+#        * Plot inStrength & outStrength stability (png to boot_photos/case_boot_<wave>.png)
+#      * Non-parametric bootstrap (nBoots = 1000, default type)
+#        * Statistics: same as above  
+#        * Save each to boot_data/<wave>_normal_boot.RData  
+#        * Plot sample-order stability (png to boot_photos/normal_boot_<wave>.png)
+# 
+################################################################
+```
+
+# Configuration
+
+```{r setup}
+# Analysis config
+ANALYSIS_TYPE <- "4TP"  # Set to either "4TP" or "5TP"
+
+# Data source config
+
+# Put in the pathing for file: subjects_with_four_or_five_events.csv + subjects_with_five_events.csv
+# This is based off my pc
+DATA_PATHS <- list(
+  "4TP" = "...",
+  "5TP" = "..."
+)
+
+# Time lookup configuration
+TIME_LOOKUPS <- list(
+  "4TP" = c(
+    "baseline_year_1_arm_1" = 1,
+    "1_year_follow_up_y_arm_1" = 2,
+    "2_year_follow_up_y_arm_1" = 3,
+    "3_year_follow_up_y_arm_1" = 4
+  ),
+  "5TP" = c(
+    "baseline_year_1_arm_1" = 1,
+    "1_year_follow_up_y_arm_1" = 2,
+    "2_year_follow_up_y_arm_1" = 3,
+    "3_year_follow_up_y_arm_1" = 4,
+    "4_year_follow_up_y_arm_1" = 5
+  )
+)
+
+# Output file config
+OUTPUT_FILES <- list(
+  "4TP" = list(
+    network_plot = "CLPN_network_transitions_balanced_4tp.png",
+    centrality_plot = "centrality_plots_4tp.png",
+    edge_values = "network_edge_values_4tp.csv",
+    centrality_metrics = "network_centrality_metrics_4tp.csv",
+    summary_stats = "network_summary_statistics_4tp.csv"
+  ),
+  "5TP" = list(
+    network_plot = "CLPN_network_transitions_balanced_5tp.png",
+    centrality_plot = "centrality_plots_5tp.png",
+    edge_values = "network_edge_values_5tp.csv",
+    centrality_metrics = "network_centrality_metrics_5tp.csv",
+    summary_stats = "network_summary_statistics_5tp.csv"
+  )
+)
+
+# Set config
+current_data_path <- DATA_PATHS[[ANALYSIS_TYPE]]
+current_time_lookup <- TIME_LOOKUPS[[ANALYSIS_TYPE]]
+current_output_files <- OUTPUT_FILES[[ANALYSIS_TYPE]]
+n_timepoints <- length(current_time_lookup)
+n_transitions <- n_timepoints - 1
+```
+
+# Load required packages
+
+```{r packages}
+library(lavaan)
+library(glmnet)
+library(qgraph)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(bootnet)
+```
+
+# Import and prepare data
+
+```{r data_import}
+# Import data
+data <- read.csv(current_data_path)
+n_subjects <- length(unique(data$src_subject_id))
+print(paste("Number of subjects in analysis:", n_subjects))
+print(paste("Analysis type:", ANALYSIS_TYPE))
+print(paste("Number of timepoints:", n_timepoints))
+```
+
+# Data reshaping and cleaning
+
+```{r data_reshape}
+
+filter_conditions <- lapply(1:n_timepoints, function(i) {
+  quo(if_all(contains(paste0("_", i)), ~!is.na(.)))
+})
+
+# Apply the filters (changes depending if 4TP or 5TP in intial block)
+data_wide <- data %>%
+  mutate(timepoint = current_time_lookup[eventname]) %>%
+  select(src_subject_id, 
+         timepoint,
+         cbcl_scr_syn_somatic_t,
+         cbcl_scr_dsm5_adhd_t,
+         cbcl_scr_syn_social_t,
+         cbcl_scr_syn_thought_t,
+         cbcl_scr_syn_rulebreak_t,
+         cbcl_scr_dsm5_depress_t,
+         cbcl_scr_dsm5_anxdisord_t) %>%
+  filter(!is.na(cbcl_scr_syn_somatic_t),
+         !is.na(cbcl_scr_dsm5_adhd_t),
+         !is.na(cbcl_scr_syn_social_t),
+         !is.na(cbcl_scr_syn_thought_t),
+         !is.na(cbcl_scr_syn_rulebreak_t),
+         !is.na(cbcl_scr_dsm5_depress_t),
+         !is.na(cbcl_scr_dsm5_anxdisord_t)) %>%
+  pivot_wider(
+    id_cols = src_subject_id,
+    names_from = timepoint,
+    values_from = c(cbcl_scr_syn_somatic_t,
+                   cbcl_scr_dsm5_adhd_t,
+                   cbcl_scr_syn_social_t,
+                   cbcl_scr_syn_thought_t,
+                   cbcl_scr_syn_rulebreak_t,
+                   cbcl_scr_dsm5_depress_t,
+                   cbcl_scr_dsm5_anxdisord_t),
+    names_glue = "{.value}_{timepoint}"
+  ) %>%
+  filter(!!!filter_conditions)
+```
+
+# Create design matrix
+
+```{r design_matrix}
+
+vars <- c("Somatic", "ADHD", "Social", "Thought", "RuleBreak", "Depression", "Anxiety")
+n_vars <- length(vars)
+
+designMat <- matrix(NA, nrow = n_vars, ncol = n_timepoints)
+for(t in 1:n_timepoints) {
+  designMat[1,t] <- paste0("cbcl_scr_syn_somatic_t_", t)
+  designMat[2,t] <- paste0("cbcl_scr_dsm5_adhd_t_", t)
+  designMat[3,t] <- paste0("cbcl_scr_syn_social_t_", t)
+  designMat[4,t] <- paste0("cbcl_scr_syn_thought_t_", t)
+  designMat[5,t] <- paste0("cbcl_scr_syn_rulebreak_t_", t)
+  designMat[6,t] <- paste0("cbcl_scr_dsm5_depress_t_", t)
+  designMat[7,t] <- paste0("cbcl_scr_dsm5_anxdisord_t_", t)
+}
+```
+
+# Data validation function
+
+```{r validation_function, include=TRUE}
+validate_numeric_data <- function(data, design_matrix) {
+  validation_results <- list()
+  
+  validation_results$design_matrix <- list(
+    dimensions = dim(design_matrix),
+    has_na = any(is.na(design_matrix)),
+    column_names = colnames(design_matrix)
+  )
+  
+  predictor_validation <- function(t) {
+    predictor_cols <- design_matrix[, t]
+    predictor_data <- tryCatch({
+      as.matrix(data[, predictor_cols])
+    }, error = function(e) {
+      return(NULL)
+    })
+    
+    if(is.null(predictor_data)) {
+      return(list(
+        status = "error",
+        message = "Failed to create predictor matrix",
+        cols_missing = predictor_cols[!predictor_cols %in% names(data)]
+      ))
+    }
+    
+    return(list(
+      status = "success",
+      dims = dim(predictor_data),
+      numeric_check = all(apply(predictor_data, 2, is.numeric)),
+      na_count = sum(is.na(predictor_data)),
+      non_finite = sum(!is.finite(as.matrix(predictor_data)))
+    ))
+  }
+  
+  validation_results$predictors <- lapply(1:(ncol(design_matrix)-1), predictor_validation)
+  
+  outcome_validation <- function(t, i) {
+    outcome_col <- design_matrix[i, t+1]
+    outcome_data <- tryCatch({
+      as.numeric(unlist(data[, outcome_col]))
+    }, error = function(e) {
+      return(NULL)
+    })
+    
+    if(is.null(outcome_data)) {
+      return(list(
+        status = "error",
+        message = "Failed to create outcome vector",
+        column = outcome_col
+      ))
+    }
+    
+    return(list(
+      status = "success",
+      length = length(outcome_data),
+      numeric_check = is.numeric(outcome_data),
+      na_count = sum(is.na(outcome_data)),
+      non_finite = sum(!is.finite(outcome_data))
+    ))
+  }
+  
+  validation_results$outcomes <- list()
+  for(t in 1:(ncol(design_matrix)-1)) {
+    validation_results$outcomes[[t]] <- lapply(1:nrow(design_matrix), 
+                                             function(i) outcome_validation(t, i))
+  }
+  
+  # Print summary
+  cat("\nValidation Summary:\n")
+  cat("===================\n")
+  
+  cat("\nDesign Matrix:\n")
+  cat(sprintf("Dimensions: %d x %d\n", 
+              validation_results$design_matrix$dimensions[1],
+              validation_results$design_matrix$dimensions[2]))
+  cat(sprintf("Contains NA: %s\n", validation_results$design_matrix$has_na))
+  
+  cat("\nPredictor Validation:\n")
+  for(t in 1:length(validation_results$predictors)) {
+    res <- validation_results$predictors[[t]]
+    cat(sprintf("\nTimepoint %d:\n", t))
+    if(res$status == "error") {
+      cat("Error: ", res$message, "\n")
+      cat("Missing columns: ", paste(res$cols_missing, collapse=", "), "\n")
+    } else {
+      cat(sprintf("Dimensions: %d x %d\n", res$dims[1], res$dims[2]))
+      cat(sprintf("All numeric: %s\n", res$numeric_check))
+      cat(sprintf("NA count: %d\n", res$na_count))
+      cat(sprintf("Non-finite values: %d\n", res$non_finite))
+    }
+  }
+  
+  return(validation_results)
+}
+```
+
+# LASSO model fitting function
+
+```{r lasso_function}
+set.seed(42)
+
+getAdjMatList <- function(designMat, data) {
+  AdjMatList <- list()
+  lambdaList <- list()
+  k <- nrow(designMat) # number of variables per wave
+  
+  # print("Starting model fitting...")
+  
+  for (t in 1:(ncol(designMat) - 1)) {
+    # print(paste("Processing transition", t))
+    
+    predictor_cols <- designMat[, t]
+    predictors <- as.matrix(data[, predictor_cols])
+    colnames(predictors) <- vars
+    
+    # print(paste("Predictor dimensions:", dim(predictors)[1], "x", dim(predictors)[2]))
+    
+    adjMat <- matrix(0, k, k)
+    colnames(adjMat) <- vars
+    rownames(adjMat) <- vars
+    
+    lambdaVec <- rep(0, k)
+    
+    for (i in 1:k) {
+      # print(paste("  Fitting model for variable", vars[i]))
+      
+      outcome_col <- designMat[i, t+1]
+      outcome <- as.numeric(unlist(data[, outcome_col]))
+      
+      # print(paste("  Outcome length:", length(outcome)))
+      
+      tryCatch({
+        # set.seed(100 + i)
+        
+        lassoreg <- cv.glmnet(x = predictors, 
+                             y = outcome, 
+                             family = "gaussian", 
+                             alpha = 1, 
+                             standardize = TRUE)
+        
+        lambdaVec[i] <- lassoreg$lambda.min
+        coef_values <- as.numeric(coef(lassoreg, s = lassoreg$lambda.min)[-1])
+        adjMat[1:k, i] <- coef_values
+        
+        # print(paste("  Model fitted successfully for", vars[i]))
+        
+      }, error = function(e) {
+        print(paste("Error in fitting model for", vars[i], ":", e$message))
+        adjMat[1:k, i] <- rep(0, k)
+      })
+    }
+    
+    AdjMatList[[t]] <- adjMat
+    lambdaList[[t]] <- lambdaVec
+    
+    # print(paste("Completed transition", t))
+  }
+  
+  return(list(B = AdjMatList, lambdas = lambdaList))
+}
+
+print("Running data validation...")
+validation_results <- validate_numeric_data(data = data_wide, design_matrix = designMat)
+
+# Fit models
+model_fit <- getAdjMatList(designMat = designMat, data = data_wide)
+
+```
+
+# Print results
+
+```{r print_results}
+for(t in 1:(n_timepoints-1)) {
+  cat("\nTransition from Time", t, "to Time", t+1, "\n")
+  cat("----------------------------------------\n")
+  
+  adj_mat <- model_fit$B[[t]]
+  
+  cat("\nAutoregressive Effects:\n")
+  for(i in 1:n_vars) {
+    cat(sprintf("%s -> %s: %.3f\n", vars[i], vars[i], adj_mat[i,i]))
+  }
+  
+  cat("\nCross-lagged Effects:\n")
+  for(i in 1:n_vars) {
+    cat(sprintf("\n%s predicting:\n", vars[i]))
+    for(j in 1:n_vars) {
+      if(i != j) {
+        cat(sprintf("  %s: %.3f\n", vars[j], adj_mat[i,j]))
+      }
+    }
+  }
+}
+```
+
+# Export edge values
+
+```{r edge_values}
+
+edge_values_list <- list()
+
+for(t in 1:length(model_fit$B)) {
+  adj_mat <- model_fit$B[[t]]
+  
+  edges <- expand.grid(
+    From = vars,
+    To = vars,
+    stringsAsFactors = FALSE
+  )
+  
+  edges$Weight <- as.vector(adj_mat)
+  edges$Transition <- paste("Wave", t, "to", t+1)
+  
+  edge_values_list[[t]] <- edges
+}
+
+all_edge_values <- do.call(rbind, edge_values_list)
+write.csv(all_edge_values, current_output_files$edge_values, row.names = FALSE)
+```
+
+# Centrality metrics functions
+
+```{r centrality_metrics}
+getCentralityMetrics <- function(adjMatList) {
+  centrality_list <- list()
+  
+  for(t in 1:length(adjMatList)) {
+    adj_mat <- adjMatList[[t]]
+    
+    # Calculate InStrength and OutStrength manually
+    in_strength <- colSums(abs(adj_mat))
+    out_strength <- rowSums(abs(adj_mat))
+    
+    # Create qgraph object for other centrality measures
+    g <- qgraph(adj_mat, directed = TRUE, weighted = TRUE)
+    cent <- centrality(g)
+    
+    # Create data frame with metrics
+    centrality_df <- data.frame(
+      Wave = rep(paste("Wave", t, "to", t+1), length(vars)),
+      Node = vars,
+      InStrength = in_strength,
+      OutStrength = out_strength,
+      Betweenness = cent$Betweenness,
+      Closeness = cent$Closeness,
+      stringsAsFactors = FALSE
+    )
+    
+    centrality_list[[t]] <- centrality_df
+  }
+  
+  all_centrality <- do.call(rbind, centrality_list)
+  write.csv(all_centrality, current_output_files$centrality_metrics, row.names = FALSE)
+  
+  return(centrality_list)
+}
+
+# Calculate centrality metrics
+centrality_metrics <- getCentralityMetrics(model_fit$B)
+```
+
+# Create centrality plots
+
+```{r centrality_plots}
+node_colors <- c("#556B2F", "#FFD700", "#FFDAB9", "#708090", "#FF8C00", "#0000FF", "#DC143C")
+groups <- list(
+  "Somatic" = 1, 
+  "ADHD" = 2, 
+  "Social" = 3, 
+  "Thought" = 4, 
+  "RuleBreak" = 5, 
+  "Depression" = 6,
+  "Anxiety" = 7
+)
+
+png(current_output_files$centrality_plot, width = 12, height = 8, res = 600, units = "in")
+
+par(mfrow = c(2,2), mar = c(4,4,2,1))
+all_metrics <- do.call(rbind, centrality_metrics)
+metric_names <- c("InStrength", "OutStrength", "Betweenness", "Closeness")
+
+# Plot each centrality metric across transitions
+
+# Adjust layout for main plots (without legend)
+# par(mfrow = c(2,2), mar = c(4,4,2,5))  # Increase right margin for legend
+
+# Plot each centrality metric across transitions
+for(metric in metric_names) {
+  # Reshape data: create a matrix with rows = nodes and columns = transitions
+  metric_data <- matrix(0, nrow = length(vars), ncol = length(centrality_metrics))
+  for(t in 1:length(centrality_metrics)) {
+    metric_data[,t] <- centrality_metrics[[t]][,metric]
+  }
+  rownames(metric_data) <- vars
+  
+  matplot(t(metric_data), type = "b", pch = 1:length(vars),
+          main = metric, xlab = "Wave", ylab = "Centrality Value",
+          col = node_colors)
+}
+
+dev.off()
+
+# Save the legend as a separate image
+png("centrality_legend_plot.png", width = 6, height = 4, res = 600, units = "in")
+# Plot only the legend
+plot.new()
+legend("center", legend = vars, col = node_colors, pch = 1:length(vars), 
+       cex = 1, horiz = FALSE, bty = "n")
+dev.off()  # Close the PNG device
+```
+
+# Network Visualization Setup
+
+```{r network_setup}
+max_edge <- max(unlist(lapply(model_fit$B, function(x) max(abs(x)))))
+max_cross <- max(unlist(lapply(model_fit$B, function(x) {
+  diag(x) <- 0  # Zero out diagonal
+  return(max(abs(x)))  # Get max of non-diagonal
+})))
+
+# Generate initial spring layout
+initial_graph <- qgraph(model_fit$B[[1]], 
+                       layout = "spring",
+                       repulsion = 1.2,
+                       labels = vars)
+spring_layout <- initial_graph$layout
+```
+
+# Create Network Visualization
+
+```{r network_visualization}
+# Create network plots with dynamic width based on number of transitions
+plot_width <- 8 * n_transitions  # 8 inches per transition
+png(current_output_files$network_plot, 
+    width = plot_width, height = 6, 
+    res = 600, units = "in")
+
+layout(matrix(1:n_transitions, 1, n_transitions), 
+       widths = rep(1, n_transitions))
+par(mar = rep(2, 4))
+AUTO_EDGE_MULTIPLIER <- 2
+CROSS_EDGE_MULTIPLIER <- 8
+
+# Create network plots for each transition
+for(t in 1:(length(model_fit$B))) {
+  adj_mat <- model_fit$B[[t]]
+  edge_colors <- matrix(NA, nrow = nrow(adj_mat), ncol = ncol(adj_mat))
+  edge_weights <- matrix(0, nrow = nrow(adj_mat), ncol = ncol(adj_mat))
+  
+  for(i in 1:nrow(adj_mat)) {
+    for(j in 1:ncol(adj_mat)) {
+      if(i == j) {  # Autoregressive effects
+        alpha_val <- min(1, (abs(adj_mat[i,j])/max_edge) * 1.5 + 0.2)
+        edge_weights[i,j] <- abs(adj_mat[i,j]) * AUTO_EDGE_MULTIPLIER
+      } else {  # Cross-lagged effects
+        alpha_val <- min(1, (abs(adj_mat[i,j])/max_cross) * 2.5 + 0.2)
+        edge_weights[i,j] <- abs(adj_mat[i,j]) * CROSS_EDGE_MULTIPLIER
+      }
+      if(adj_mat[i,j] > 0) {
+        edge_colors[i,j] <- adjustcolor("#377EB8", alpha.f = alpha_val)  
+      } else {
+        edge_colors[i,j] <- adjustcolor("#E41A1C", alpha.f = alpha_val)  
+      }
+    }
+  }
+  
+  # Edge threshold 
+  # If you want to change the thresholds, change this value: 
+  # edge_weights[edge_weights > 0 & edge_weights < #.##] <- #.##
+  edge_weights[edge_weights > 0 & edge_weights < 0.15] <- 0.15
+  
+  qgraph(adj_mat,
+         layout = spring_layout,
+         groups = groups,
+         labels = vars,
+         color = node_colors,
+         edge.color = edge_colors,
+         edge.width = edge_weights,
+         edge.labels = FALSE,  
+         label.cex = 1.4,     
+         label.scale = TRUE,
+         node.width = 2.5,    
+         node.height = 2.5,   
+         directed = TRUE,
+         arrows = TRUE,
+         asize = 4,          
+         edge.length = 1.4,  
+         maximum = max_edge * 0.4,
+         minimum = 0.001,    
+         cut = 0.001,       
+         fade = FALSE,
+         title = paste("Wave", t, "to", t+1),
+         title.cex = 1.5,
+         vsize = 4)
+}
+
+dev.off()
+```
+
+# Save Summary Statistics
+
+```{r summary_stats}
+# Create summary statistics
+summary_stats <- lapply(1:length(model_fit$B), function(t) {
+  adj_mat <- model_fit$B[[t]]
+  data.frame(
+    Wave = paste(t, "to", t+1),
+    Mean_Effect = mean(abs(adj_mat)),
+    Max_Effect = max(abs(adj_mat)),
+    Somatic_Auto = adj_mat[1,1],
+    ADHD_Auto = adj_mat[2,2],
+    Social_Auto = adj_mat[3,3],
+    Thought_Auto = adj_mat[4,4],
+    RuleBreak_Auto = adj_mat[5,5],
+    Depression_Auto = adj_mat[6,6],
+    Anxiety_Auto = adj_mat[7,7]
+  )
+})
+
+get_standardized_centrality <- function(adjMatList) {
+  centrality_list <- list()
+  
+  for(t in 1:length(adjMatList)) {
+    adj_mat <- adjMatList[[t]]
+    
+    in_strength <- colSums(abs(adj_mat))
+    out_strength <- rowSums(abs(adj_mat))
+    centrality_df <- data.frame(
+      Wave = rep(paste("Wave", t, "to", t+1), length(vars)),
+      Node = vars,
+      InStrength = in_strength,
+      OutStrength = out_strength,
+      stringsAsFactors = FALSE
+    )
+    
+    centrality_list[[t]] <- centrality_df
+  }
+  
+  return(centrality_list)
+}
+
+summary_df <- do.call(rbind, summary_stats)
+write.csv(summary_df, current_output_files$summary_stats, row.names = FALSE)
+```
+
+# Bootstrapping with bootnet
+
+```{r}
+# Wrap getAdjMatList call so bootnet can re‐estimate network on resampled data
+getMat_i = function (i, data) {
+  function (data) {
+    getAdjMatList(designMat = designMat, data = data)$B[[i]]
+  }
+}
+```
+
+# Case-Dropping Boot
+
+```{r}
+for (i in 1:3) {
+  Network <- estimateNetwork(data_wide, directed=TRUE, fun=getMat_i(i), labels=c("Somatic", "ADHD", "Social", "Thought", "RuleBreak", "Depression", "Anxiety"))
+  
+  boot <- bootnet(Network, nBoots = 2500, type="case", statistics=c("edge", "strength", "outStrength", "inStrength", "betweenness", "closeness"))
+  
+  save(boot, file = paste("boot_data/", i, "_case_boot.RData", sep=""))
+  
+  png(paste("boot_photos/case_boot_", i, ".png", sep = ""), width = 6, height = 4, res = 600, units = "in")
+  p <- plot(boot, statistics=c("outStrength", "inStrength"))
+  print(p)
+  dev.off()  # Close the PNG device
+}
+```
+
+# Non-parametric Boot
+
+```{r}
+for (i in 1:3) {
+  Network <- estimateNetwork(data_wide, directed=TRUE, fun=getMat_i(i), labels=c("Somatic", "ADHD", "Social", "Thought", "RuleBreak", "Depression", "Anxiety"))
+  
+  boot <- bootnet(Network, nBoots = 1000, statistics=c("edge", "strength", "outStrength", "inStrength", "betweenness", "closeness"))
+  
+  save(boot, file = paste("boot_data/", i, "_normal_boot.RData", sep=""))
+  
+  png(paste("boot_photos/normal_boot_", i, ".png", sep = ""), width = 6, height = 6, res = 600, units = "in")
+  p <- plot(boot, order = "sample")
+  print(p)
+  dev.off()  # Close the PNG device
+}
+```
+
+```{r}
+# If loading from saved bootstrap data
+# for (i in 1:3) {
+#   load(paste("boot_data/", i, "_normal_boot.RData", sep=""))
+#   
+#   png(paste("boot_photos/normal_boot_", i, ".png", sep = ""), width = 6, height = 6, res = 600, units = "in")
+#   p <- plot(boot, order = "sample")
+#   print(p)
+#   dev.off()  # Close the PNG device
+# }
+```
