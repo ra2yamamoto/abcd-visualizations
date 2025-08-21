@@ -1,35 +1,26 @@
 # Libraries
 library(ggraph)
 library(igraph)
-library(RColorBrewer)
 library(dplyr)
 
 # setwd("...")
-hierarchy <- read.csv("hierarchy_df.csv")
 vertices <- read.csv("vertex_df.csv")
 connect <- read.csv("connections_df.csv")
 
-vertices <- vertices[-c(1:10), ]
+# Keep only edges whose endpoints exist in the current vertex set
 connect <- connect[connect$from %in% vertices$name & connect$to %in% vertices$name, ]
 
-# Calculate vertex degrees and reorder vertices
+# Calculate vertex degrees and reorder vertices by decreasing number of connections
 temp_graph <- graph_from_data_frame(connect, vertices = vertices, directed = FALSE)
 vertex_degrees <- degree(temp_graph)
 vertices$degree <- vertex_degrees[vertices$name]
 vertices <- vertices %>% arrange(desc(degree))
-
-# Calculate label positions and angles based on degree order
-vertices$id <- seq_len(nrow(vertices))
-nleaves <- nrow(vertices)
-vertices$angle <- 90
-vertices$hjust <- 1
 
 # Create the graph with the reordered vertices
 mygraph <- graph_from_data_frame(connect, vertices = vertices, directed = FALSE)
 
 # Define colors
 color_list <- list(
-  
   "Residential Characteristics" = "#8c564b",  # Brown, representing physical spaces
   "Ethnicity/Nationality" = "#bcbd22",  # Olive, as a neutral cultural color
   "Diet/Nutrition" = "#17becf",  # Cyan, representing freshness and water
@@ -38,13 +29,13 @@ color_list <- list(
   "Religion" = "#9467bd",  # Purple, often associated with spirituality
   "Family Dynamics & Parenting" = "#ff7f0e",  # Orange, warm and nurturing
   "Parent Social Functioning" = "#d62728",  # Dark red, linking to social/emotional interactions
-  "Social Relationship Quality" = "orange",  # Pink, linked to connection and relationships
+  "Social Relationship Quality" = "orange", 
   "School Dynamics" = "#1f77b4",  # Blue, representing structure and learning
   "Adverse Life Events" = "#d62728",  # Dark red, representing hardship
   "Cognitive Task Outcomes" = "#7f7f7f",  # Gray, neutral for performance measures
   "Sleep Problems" = "#1a55FF",  # Dark blue, associated with night and sleep
   "Medical/Somatic Problems" = "#8c564b",  # Brown, grounded and bodily health
-  "Externalizing" = "green",  # Light red, linked to behavioral outbursts
+  "Externalizing" = "green", 
   "ADHD" = "#F0E442",  # Yellow, highlighting attention/impulsivity
   "Anxiety" = "#d62728",  # Red, linked to alertness and stress
   "Other Personality Features" = "purple",  # Cyan, a broad neutral choice
@@ -56,14 +47,12 @@ color_list <- list(
   "Parent Cognitive and Attention Issues" = "#ffbb78",  # Orange, linking to focus/attention
   "Parent Personality" = "#9467bd",  # Purple, aligning with broad personality traits
   "Family Drug Use" = "#e377c2",  # Pink, associated with behavioral/social risk
-  "SES & Mobility" = "#bcbd22", #,  # Olive, representing socioeconomic movement
+  "SES & Mobility" = "#bcbd22", # Olive, representing socioeconomic movement
   # "Low Mood" = "#4c72b0",
   # "Delta" = "#a6bddb",  # Light blue, maintaining consistency with mood-related changes  
   "Family Psychopathology & Well-Being" = "#e377c2"  # Pink, linking to behavioral and emotional health  
   # "None" = "black" 
 )
-
-unique(vertices$group)
 
 # Create the plot
 p2 <- ggraph(mygraph, layout = "linear") + 
@@ -74,21 +63,21 @@ p2 <- ggraph(mygraph, layout = "linear") +
     plot.margin = unit(c(0, 0, 0, 0), "cm")
   ) +
   geom_edge_arc(
-    aes(alpha = value * 0.05),
     edge_colour = "blue",
     edge_alpha = 0.3,
     edge_width = 0.5
   ) +
   geom_node_point(aes(colour = group), size = 4, alpha = 0.7) +
   geom_node_text(
-    aes(y = y - 1, label = name, color=group, angle = angle, hjust = hjust),
+    aes(y = y - 1, label = name, color=group),
+    angle = 90, 
+    hjust = 1,
     size = 3,
     alpha = 1
   ) 
   
 p2 <- p2 + scale_color_manual(values = color_list)
 
-print(p2)
+# print(p2)
 
 ggsave("plot_highres.png", plot = p2, width = 12, height = 8, dpi = 600)
-

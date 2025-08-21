@@ -2,67 +2,43 @@
 
 ```{r}
 ################################################################
+# Cross-Lagged Panel Modeling of Child Variables (ABCD Data)
 #
-# Cross-lagged Network Analysis of ABCD Data
-# 
-# Description: Analyzes temporal relationships using LASSO-based network models across 5 timepoints.
+# This script estimates longitudinal networks of child symptom
+# domains across multiple assessment waves of the ABCD study. 
+# Using LASSO regression with cross-validation, it models both 
+# autoregressive and cross-lagged effects, then derives network
+# metrics and visualizations to identify key drivers of change.
 #
-# Functions Overview:
+# Main Steps:
 # 1. Data Preparation
-#    Handles data import and cleaning for ABCD dataset. Converts
-#    longitudinal data to wide format for network analysis.
-#    Returns: Clean dataset ready for model fitting
+#    • Load ABCD dataset (4 or 5 timepoints)
+#    • Select and reshape symptom variables to wide format
+#    • Build a design matrix linking variables across waves
 #
 # 2. Model Fitting
-#    Implements LASSO regression for each temporal transition.
-#    Uses cross-validation for parameter selection. 
-#    Returns: Coefficient matrices for network construction
+#    • For each transition, fit LASSO regressions (CV λ)
+#    • Extract autoregressive and cross-lagged coefficients
 #
 # 3. Network Analysis
-#    Processes model outputs into network metrics. Calculates
-#    various centrality measures to identify key symptoms.
-#    Returns: Network metrics and edge weights
+#    • Construct adjacency matrices
+#    • Compute centrality metrics (In/Out-Strength, Betweenness,
+#      Closeness)
+#    • Export edge weights and centrality results
 #
 # 4. Visualization
-#    Creates network viz + plots.
-#    Generates both static networks and temporal evolution plots.
-#    Returns: Network plots and centrality visualizations
-# 
-# ANALYSIS PLAN:
-# 1. Data Preparation
-#    - Load required libraries
-#    - Import ABCD dataset with 5 timepoints
-#    - Clean and reshape data into wide format
-#    - Create design matrix for variable mapping
+#    • Plot estimated networks per transition
+#    • Generate centrality trajectories across waves
 #
-# 2. Model Fitting
-#    - Fit LASSO models for each transition
-#    - Extract coefficients for network edges
-#    - Validate numeric data at each step
+# 5. Robustness / Bootstrapping
+#    • Case-dropping (nBoots=2500) and non-parametric (nBoots=1000)
+#    • Assess stability of edge weights and centrality estimates
 #
-# 3. Network Analysis
-#    - Calculate centrality metrics:
-#      * InStrength/OutStrength
-#      * Betweenness
-#      * Closeness
-#    - Export edge values and metrics to CSV
+# Outputs:
+# • Network plots and centrality plots (PNG)
+# • Edge weights and centrality metrics (CSV)
+# • Bootstrapped stability analyses (RData + PNG)
 #
-# 4. Visualization
-#    - Create network plots for each transition
-#    - Generate centrality plots
-#    - Make standardized centrality plots
-# 
-# 5. Bootstrapping with bootnet
-#    - For waves 0→1, 1→2, 2→3:
-#      * Case-dropping bootstrap (nBoots = 2500, type = "case") 
-#        * Statistics: edge weights, strength, inStrength, outStrength, betweenness, closeness  
-#        * Save each “case” bootstrap to boot_data/<wave>_case_boot.RData  
-#        * Plot inStrength & outStrength stability (png to boot_photos/case_boot_<wave>.png)
-#      * Non-parametric bootstrap (nBoots = 1000, default type)
-#        * Statistics: same as above  
-#        * Save each to boot_data/<wave>_normal_boot.RData  
-#        * Plot sample-order stability (png to boot_photos/normal_boot_<wave>.png)
-# 
 ################################################################
 ```
 
@@ -70,14 +46,14 @@
 
 ```{r setup}
 # Analysis config
-ANALYSIS_TYPE <- "4TP"  # Set to either "4TP" or "5TP"
+ANALYSIS_TYPE <- "4TP"  # "4TP" used in results
 
 # Data source config
-
-# Put in the pathing for file: subjects_with_four_or_five_events.csv + subjects_with_five_events.csv
-# This is based off my pc
+# Load extracted data. Extracted data is in a different format for this file than for the other network analyses. 
+# Put in the pathing for file: subjects_with_four_or_five_events.csv or subjects_with_five_events.csv
+setwd("/Users/Raphael/Desktop/GabLab/ABCD/code for submission/Network Models/child")
 DATA_PATHS <- list(
-  "4TP" = "...",
+  "4TP" = "subjects_with_four_or_five_events.csv",
   "5TP" = "..."
 )
 
@@ -127,12 +103,10 @@ n_transitions <- n_timepoints - 1
 # Load required packages
 
 ```{r packages}
-library(lavaan)
 library(glmnet)
 library(qgraph)
 library(dplyr)
 library(tidyr)
-library(ggplot2)
 library(bootnet)
 ```
 
@@ -155,7 +129,7 @@ filter_conditions <- lapply(1:n_timepoints, function(i) {
   quo(if_all(contains(paste0("_", i)), ~!is.na(.)))
 })
 
-# Apply the filters (changes depending if 4TP or 5TP in intial block)
+# Apply the filters (changes depending if 4TP or 5TP in initial block)
 data_wide <- data %>%
   mutate(timepoint = current_time_lookup[eventname]) %>%
   select(src_subject_id, 
@@ -312,6 +286,8 @@ validate_numeric_data <- function(data, design_matrix) {
 ```{r lasso_function}
 set.seed(42)
 
+# For each transition (t -> t+1), fit k separate CV-LASSO models (one per outcome variable at t+1).
+# Each model uses all k variables at time t as predictors. Coefs populate the adjacency matrix column-wise. 
 getAdjMatList <- function(designMat, data) {
   AdjMatList <- list()
   lambdaList <- list()
@@ -343,8 +319,6 @@ getAdjMatList <- function(designMat, data) {
       # print(paste("  Outcome length:", length(outcome)))
       
       tryCatch({
-        # set.seed(100 + i)
-        
         lassoreg <- cv.glmnet(x = predictors, 
                              y = outcome, 
                              family = "gaussian", 
@@ -362,6 +336,8 @@ getAdjMatList <- function(designMat, data) {
         adjMat[1:k, i] <- rep(0, k)
       })
     }
+    
+    # adjMat[, i] stores predictors -> outcome i for the next wave.
     
     AdjMatList[[t]] <- adjMat
     lambdaList[[t]] <- lambdaVec
@@ -493,11 +469,6 @@ all_metrics <- do.call(rbind, centrality_metrics)
 metric_names <- c("InStrength", "OutStrength", "Betweenness", "Closeness")
 
 # Plot each centrality metric across transitions
-
-# Adjust layout for main plots (without legend)
-# par(mfrow = c(2,2), mar = c(4,4,2,5))  # Increase right margin for legend
-
-# Plot each centrality metric across transitions
 for(metric in metric_names) {
   # Reshape data: create a matrix with rows = nodes and columns = transitions
   metric_data <- matrix(0, nrow = length(vars), ncol = length(centrality_metrics))
@@ -515,6 +486,7 @@ dev.off()
 
 # Save the legend as a separate image
 png("centrality_legend_plot.png", width = 6, height = 4, res = 600, units = "in")
+
 # Plot only the legend
 plot.new()
 legend("center", legend = vars, col = node_colors, pch = 1:length(vars), 
@@ -578,8 +550,6 @@ for(t in 1:(length(model_fit$B))) {
   }
   
   # Edge threshold 
-  # If you want to change the thresholds, change this value: 
-  # edge_weights[edge_weights > 0 & edge_weights < #.##] <- #.##
   edge_weights[edge_weights > 0 & edge_weights < 0.15] <- 0.15
   
   qgraph(adj_mat,
@@ -667,7 +637,7 @@ getMat_i = function (i, data) {
 }
 ```
 
-# Case-Dropping Boot
+# Case-Dropping Bootstrap
 
 ```{r}
 for (i in 1:3) {
@@ -684,7 +654,7 @@ for (i in 1:3) {
 }
 ```
 
-# Non-parametric Boot
+# Non-parametric Bootstrap
 
 ```{r}
 for (i in 1:3) {

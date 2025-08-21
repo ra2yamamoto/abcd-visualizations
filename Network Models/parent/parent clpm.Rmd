@@ -1,34 +1,57 @@
 # Cross-lagged Panel Modeling of Parent Variables
 
 ```{r}
-# ------------------------------------------------------------------------------
-# Cross‐Lagged Panel Modeling of Parent Variables
+################################################################
+# Cross-Lagged Panel Modeling of Parent Variables (ABCD Data)
 #
-# This script estimates temporal (autoregressive and cross‐lagged) relationships
-# among parent variables across three assessment waves (time = 0, 2, and 4).
+# Overview:
+# This script estimates longitudinal networks spanning parent 
+# symptom domains across three assessment waves (baseline, 2y FU, 4y FU).
+# Using LASSO regression with cross-validation, it models both 
+# autoregressive and cross-lagged influences, computes network centrality,
+# and evaluates stability with bootstrap methods.
 #
-# Steps:
-#   1. Load required packages and register parallel backend.
-#   2. Read in long‐form parent symptom data.
-#   3. Extract and reshape to wide format, dropping any cases with missing data.
-#   4. Fit LASSO regressions for each successive transition (0→2, 2→4):
-#        • Obtain optimal λ via cross‐validation
-#        • Build adjacency matrices of directed effects
-#   5. Compute and export network centrality metrics (InStrength, OutStrength,
-#      Betweenness, Closeness).
-#   6. Perform stability analyses using nonparametric (nBoots=1000) and
-#      case‐dropping (nBoots=2500) bootstraps, saving results and plots.
+# Main Steps:
+# 1. Data Preparation
+#    • Load extracted long-format ABCD data
+#    • Reshape to wide format for 3 timepoints (0,2,4)
+#    • Restrict to subjects with complete data (no NA across all variables at each included wave)
 #
-# ------------------------------------------------------------------------------
+# 2. Model Fitting
+#    • Fit LASSO regressions for each transition (0→2, 2→4)
+#    • Extract optimal λ values and adjacency matrices of effects
+#
+# 3. Network Analysis
+#    • Build directed weighted networks
+#    • Compute centrality metrics (In/Out-Strength, Betweenness, Closeness)
+#    • Export edge weights and centrality tables to CSV
+#
+# 4. Visualization
+#    • Plot centrality trajectories across waves
+#    • Visualize networks with spring layouts
+#
+# 5. Robustness / Bootstrapping
+#    • Nonparametric bootstrap (nBoots=1000)
+#    • Case-dropping bootstrap (nBoots=2500)
+#    • Assess stability of edges and centrality estimates
+#    • Save results to boot_data/ and plots to boot_photos/
+#
+# Parallelization:
+# • Uses doParallel backend (4 workers) to speed up cross-validation
+#
+# Outputs:
+# • Centrality plots and network visualizations (PNG)
+# • Edge weights and centrality metrics (CSV)
+# • Bootstrap stability results (RData + PNG)
+#
+################################################################
 ```
 
 ```{r}
-library(lavaan)
 library(glmnet)
 library(qgraph)
 library(dplyr)
 library(tidyr)
-library(ggplot2)
 library(bootnet)
 library(doParallel)
 registerDoParallel(4)
@@ -39,20 +62,22 @@ registerDoParallel(4)
 library(readr)  # for read_csv
 
 # Load the dataset
-df <- read_csv("...") # load extracted data
+df <- read_csv("CLEAN_ABCD_5.1_panel_20250321.csv") # load extracted data
+
+current_output_files <- list(
+    network_plot = "CLPN_network_transitions_balanced_4tp.png",
+    centrality_plot = "centrality_plots_4tp.png",
+    edge_values = "network_edge_values_4tp.csv",
+    centrality_metrics = "network_centrality_metrics_4tp.csv",
+    summary_stats = "network_summary_statistics_4tp.csv"
+  )
 ```
 
 ```{r}
-head(df)
-
 set.seed(42)
 ```
 
 ```{r}
-# Required library
-library(dplyr)
-library(tidyr)
-
 # Function to extract data for LASSO (with missing value removal)
 extract_lasso_data <- function(data_long, variable_roots, id_var = "subject", time_var = "time") {
   # Step 1: Keep only relevant variables + id + time
@@ -92,8 +117,9 @@ extract_lasso_data <- function(data_long, variable_roots, id_var = "subject", ti
 ```{r}
 library(glmnet)
 
+# For each transition (t -> t+1), fit k separate CV-LASSO models (one per outcome variable at t+1).
+# Each model uses all k variables at time t as predictors. Coefs populate the adjacency matrix column-wise. 
 run_lasso_transition <- function(data_wide, variable_roots, verbose = FALSE) {
-  
   timepoints <- c(0, 2, 4)
   k <- length(variable_roots)
   
@@ -133,6 +159,8 @@ run_lasso_transition <- function(data_wide, variable_roots, verbose = FALSE) {
       }
     }
     
+    # adjMat[, i] stores predictors -> outcome i for the next wave.
+    
     AdjMatList[[t]] <- adjMat
     LambdaList[[t]] <- lambdaVec
   }
@@ -154,11 +182,36 @@ data_wide <- extract_lasso_data(df, variable_roots)
 model_fit <- run_lasso_transition(data_wide, variable_roots)
 ```
 
-# Centrality metrics functions
+# Export edge values
 
 ```{r}
 vars <- variable_roots
 ```
+
+```{r edge_values}
+
+edge_values_list <- list()
+
+for(t in 1:length(model_fit$B)) {
+  adj_mat <- model_fit$B[[t]]
+  
+  edges <- expand.grid(
+    From = vars,
+    To = vars,
+    stringsAsFactors = FALSE
+  )
+  
+  edges$Weight <- as.vector(adj_mat)
+  edges$Transition <- paste("Wave", (t - 1) * 2, "to", t*2)
+  
+  edge_values_list[[t]] <- edges
+}
+
+all_edge_values <- do.call(rbind, edge_values_list)
+write.csv(all_edge_values, current_output_files$edge_values, row.names = FALSE)
+```
+
+# Centrality metrics functions
 
 ```{r centrality_metrics}
 getCentralityMetrics <- function(adjMatList) {
@@ -177,7 +230,7 @@ getCentralityMetrics <- function(adjMatList) {
     
     # Create data frame with metrics
     centrality_df <- data.frame(
-      # Wave = rep(paste("Wave", t, "to", t+1), length(vars)),
+      Wave = rep(paste("Wave", (t - 1) * 2, "to", t*2), length(vars)),
       Node = vars,
       InStrength = in_strength,
       OutStrength = out_strength,
@@ -199,97 +252,6 @@ getCentralityMetrics <- function(adjMatList) {
 centrality_metrics <- getCentralityMetrics(model_fit$B)
 ```
 
-# Save Summary Statistics
-
-```{r summary_stats}
-# Create summary statistics
-summary_stats <- lapply(1:length(model_fit$B), function(t) {
-  adj_mat <- model_fit$B[[t]]
-  data.frame(
-    Wave = paste(t, "to", t+1),
-    Mean_Effect = mean(abs(adj_mat)),
-    Max_Effect = max(abs(adj_mat)),
-    Somatic_Auto = adj_mat[1,1],
-    ADHD_Auto = adj_mat[2,2],
-    Social_Auto = adj_mat[3,3],
-    Thought_Auto = adj_mat[4,4],
-    RuleBreak_Auto = adj_mat[5,5],
-    Depression_Auto = adj_mat[6,6],
-    Anxiety_Auto = adj_mat[7,7]
-  )
-})
-
-get_standardized_centrality <- function(adjMatList) {
-  centrality_list <- list()
-  
-  for(t in 1:length(adjMatList)) {
-    adj_mat <- adjMatList[[t]]
-    
-    in_strength <- colSums(abs(adj_mat))
-    out_strength <- rowSums(abs(adj_mat))
-    centrality_df <- data.frame(
-      Wave = rep(paste("Wave", t, "to", t+1), length(vars)),
-      Node = vars,
-      InStrength = in_strength,
-      OutStrength = out_strength,
-      stringsAsFactors = FALSE
-    )
-    
-    centrality_list[[t]] <- centrality_df
-  }
-  
-  return(centrality_list)
-}
-
-summary_df <- do.call(rbind, summary_stats)
-write.csv(summary_df, current_output_files$summary_stats, row.names = FALSE)
-```
-
-# Bootstrapping with bootnet
-
-```{r}
-# Wrap getAdjMatList call so bootnet can re‐estimate network on resampled data
-getMat_i = function (i, data) {
-  function (data) {
-    run_lasso_transition(data, variable_roots)$B[[i]]
-  }
-}
-```
-
-# Non-parametric Boot
-
-```{r}
-for (i in 1:2) {
-  Network <- estimateNetwork(data_wide, directed=TRUE, fun=getMat_i(i), labels=variable_roots)
-  
-  boot <- bootnet(Network, nBoots = 1000, statistics=c("edge", "strength", "outStrength", "inStrength", "betweenness", "closeness"))
-  
-  save(boot, file = paste("boot_data/", i, "_normal_boot.RData", sep=""))
-  
-  png(paste("boot_photos/normal_boot_", i, ".png", sep = ""), width = 6, height = 4, res = 600, units = "in")
-  p <- plot(boot, order = "sample")
-  print(p)
-  dev.off()  # Close the PNG device
-}
-```
-
-# Case-Dropping Boot
-
-```{r}
-for (i in 1:2) {
-  Network <- estimateNetwork(data_wide, directed=TRUE, fun=getMat_i(i), labels=variable_roots)
-  
-  boot <- bootnet(Network, nBoots = 2500, type="case", statistics=c("edge", "strength", "outStrength", "inStrength", "betweenness", "closeness"))
-  
-  save(boot, file = paste("boot_data/", i, "_case_boot.RData", sep=""))
-  
-  png(paste("boot_photos/case_boot_", i, ".png", sep = ""), width = 6, height = 4, res = 600, units = "in")
-  p <- plot(boot, statistics=c("outStrength", "inStrength"))
-  print(p)
-  dev.off()  # Close the PNG device
-}
-```
-
 # Create Centrality and Network Plots
 
 ```{r}
@@ -298,29 +260,21 @@ B_list <- model_fit$B
 # Define colors for nodes
 node_colors <- c("#00008B", "#950606", "#06402B", "#BA8E23", "#6e352a")
 
-# Define groups (adjust as needed)
+# Define groups
 groups <- list(
   "parent_depress_D_p" = 1, 
-  # "parent_suicidal_thoughts_p" = 2, 
   "parent_anxdisord_D_p" = 2, 
   "parent_external_D_p" = 3, 
   "parent_adhd_D_p" = 4, 
-  # "parent_bad_relationships_p" = 5,
-  # "parent_feels_unloved_p" = 5,
   "parent_somatic_problems_D_p" = 5
 )
 
-# Plot centrality metrics to file (adjust file path as needed)
+# Plot centrality metrics to file
 png("centrality_plot.png", width = 12, height = 8, res = 600, units = "in")
 
 par(mfrow = c(2,2), mar = c(4,4,2,1))
 all_metrics <- do.call(rbind, centrality_metrics)
 metric_names <- c("InStrength", "OutStrength", "Betweenness", "Closeness")
-
-# Plot each centrality metric across transitions
-
-# Adjust layout for main plots (without legend)
-# par(mfrow = c(2,2), mar = c(4,4,2,5))  # Increase right margin for legend
 
 # Plot each centrality metric across transitions
 for(metric in metric_names) {
@@ -425,4 +379,49 @@ for(t in 1:length(B_list)) {
 }
 
 dev.off()
+```
+
+# Bootstrapping with bootnet
+
+```{r}
+# Wrap getAdjMatList call so bootnet can re‐estimate network on resampled data
+getMat_i = function (i, data) {
+  function (data) {
+    run_lasso_transition(data, variable_roots)$B[[i]]
+  }
+}
+```
+
+# Non-parametric Bootstrap
+
+```{r}
+for (i in 1:2) {
+  Network <- estimateNetwork(data_wide, directed=TRUE, fun=getMat_i(i), labels=variable_roots)
+  
+  boot <- bootnet(Network, nBoots = 1000, statistics=c("edge", "strength", "outStrength", "inStrength", "betweenness", "closeness"))
+  
+  save(boot, file = paste("boot_data/", i, "_normal_boot.RData", sep=""))
+  
+  png(paste("boot_photos/normal_boot_", i, ".png", sep = ""), width = 6, height = 4, res = 600, units = "in")
+  p <- plot(boot, order = "sample")
+  print(p)
+  dev.off()  # Close the PNG device
+}
+```
+
+# Case-Dropping Bootstrap
+
+```{r}
+for (i in 1:2) {
+  Network <- estimateNetwork(data_wide, directed=TRUE, fun=getMat_i(i), labels=variable_roots)
+  
+  boot <- bootnet(Network, nBoots = 2500, type="case", statistics=c("edge", "strength", "outStrength", "inStrength", "betweenness", "closeness"))
+  
+  save(boot, file = paste("boot_data/", i, "_case_boot.RData", sep=""))
+  
+  png(paste("boot_photos/case_boot_", i, ".png", sep = ""), width = 6, height = 4, res = 600, units = "in")
+  p <- plot(boot, statistics=c("outStrength", "inStrength"))
+  print(p)
+  dev.off()  # Close the PNG device
+}
 ```

@@ -1,7 +1,8 @@
 # Libraries
 library(ggraph)
 library(igraph)
-library(RColorBrewer)
+
+# Read in dataframes specifying graph
 
 # setwd("...")
 hierarchy <- read.csv("hierarchy_df.csv")
@@ -51,11 +52,10 @@ nleaves <- length(myleaves)
 vertices$id[ myleaves ] <- seq(1:nleaves)
 vertices$angle <- 90 -360 * vertices$id / nleaves
 
-# calculate the alignment of labels: right or left
-# If I am on the left part of the plot, my labels have currently an angle < -90
+# Calculate label alignments
 vertices$hjust <- ifelse( vertices$angle < -90, 1, 0)
 
-# flip angle to make them readable
+# Flip angle to make labels readable
 vertices$angle <- ifelse(vertices$angle < -90, vertices$angle+180, vertices$angle)
 
 mygraph <- graph_from_data_frame(hierarchy, vertices = vertices)
@@ -63,14 +63,12 @@ mygraph <- graph_from_data_frame(hierarchy, vertices = vertices)
 from <- match(connect$from, vertices$name)
 to <- match(connect$to, vertices$name)
 
-vertices$type[vertices$type == ""] <- "Other"
-
 # Basic plot setup
 p <- ggraph(mygraph, layout = 'dendrogram', circular = TRUE) +
   scale_x_continuous(expand = c(0.2, 0)) +  # Add space around the plot
   scale_y_continuous(expand = c(0.2, 0)) +
-  theme_void() # +  # Use a minimal theme for better visualization
-  theme(plot.margin = unit(c(6, 6, 6, 6), "cm"))
+  theme_void() # Use a minimal theme for better visualization
+  # theme(plot.margin = unit(c(6, 6, 6, 6), "cm"))
 
 # Add edges with a fixed color
 for (i in seq_along(from)) {
@@ -147,7 +145,6 @@ color_list <- list(
 p <- p + scale_colour_manual(
   values = color_list # Assign colors for groups
 )
-sum(is.na(vertices$group))
 
 # Display the plot
 p <- p + theme(legend.position = "none") # comment to show legend

@@ -1,34 +1,20 @@
 # Libraries
 library(ggraph)
 library(igraph)
-library(RColorBrewer)
 library(dplyr)
 
 # setwd("...")
-hierarchy <- read.csv("hierarchy_df.csv")
 vertices <- read.csv("vertex_df.csv")
 connect <- read.csv("connections_df.csv")
 
-vertices <- vertices[-c(1:11), ]
-
-vertices <- vertices[vertices$name != "perfectionist_p", ]
-vertices <- vertices[vertices$name != "sugary_beverage_freq", ]
-
+# Keep only edges whose endpoints exist in the current vertex set
 connect <- connect[connect$from %in% vertices$name & connect$to %in% vertices$name, ]
 
-unique(vertices$group)
-
-# Calculate vertex degrees and reorder vertices
+# Calculate vertex degrees and reorder vertices by decreasing number of connections
 temp_graph <- graph_from_data_frame(connect, vertices = vertices, directed = FALSE)
 vertex_degrees <- degree(temp_graph)
 vertices$degree <- vertex_degrees[vertices$name]
 vertices <- vertices %>% arrange(desc(degree))
-
-# Calculate label positions and angles based on degree order
-vertices$id <- seq_len(nrow(vertices))
-nleaves <- nrow(vertices)
-vertices$angle <- 90 
-vertices$hjust <- 1 
 
 # Create the graph with the reordered vertices
 mygraph <- graph_from_data_frame(connect, vertices = vertices, directed = FALSE)
@@ -39,7 +25,7 @@ color_list <- list(
   "Anxiety"                             = "#d62728",  # Dark red (existing)
   "Impulsivity and Behavior Regulation" = "#E6B800",  # Dark gold (parent ADHD-related)
   "Child ADHD"                                 = "#F0E442",  # Bright yellow (existing)
-  "Other Psychopathology "              = "#9c88ff",  # Lavender (distinct for "other")
+  "Other Psychopathology"              = "#9c88ff",  # Lavender (distinct for "other")
   "Somatic Problems"                    = "brown", 
   "Residential Characteristics"                = "#8c564b",  # Brown (existing)
   "Cognitive and Attention Issues"      = "#FFD700",  # Gold (aligned with Child ADHD)
@@ -51,8 +37,6 @@ color_list <- list(
   "Personality" = "#9467bd"  # Purple, aligning with broad personality traits
 )
 
-unique(vertices$group)
-
 # Create the plot
 p2 <- ggraph(mygraph, layout = "linear") + 
   scale_x_continuous(expand = c(0.2, 0)) +  # Add space around the plot
@@ -62,21 +46,21 @@ p2 <- ggraph(mygraph, layout = "linear") +
     plot.margin = unit(c(0, 0, 0, 0), "cm")
   ) +
   geom_edge_arc(
-    aes(alpha = value * 0.05),
     edge_colour = "blue",
     edge_alpha = 0.3,
     edge_width = 0.5
   ) +
   geom_node_point(aes(colour = group), size = 4, alpha = 0.7) +
   geom_node_text(
-    aes(y = y - 1, label = name, color=group, angle = angle, hjust = hjust),
+    aes(y = y - 1, label = name, color=group),
+    angle = 90,
+    hjust = 1,
     size = 3,
     alpha = 1
   ) 
   
 p2 <- p2 + scale_color_manual(values = color_list)
 
-print(p2)
+# print(p2)
 
 ggsave("plot_highres.png", plot = p2, width = 12, height = 8, dpi = 600)
-
