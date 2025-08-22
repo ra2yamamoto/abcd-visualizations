@@ -45,7 +45,7 @@ Each script produces figure files (PNG) and supporting tables (CSV or RData). Th
 ## Contributions
 
 - **Raphael Yamamoto** — primary code author: organized analysis pipeline and prepared visualizations.  
-- **Clark Roberts** — conceptualization, methodological input, and guidance on analytic design.  
+- **Clark Roberts** — secondary code author: conceptualization, methodological input, guidance on analytic design, analysis, and visualizations. 
 
 ## Correspondence
 

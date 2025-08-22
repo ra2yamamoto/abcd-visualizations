@@ -3,7 +3,7 @@ library(ggraph)
 library(igraph)
 library(dplyr)
 
-# setwd("...")
+setwd("/Users/Raphael/Desktop/GabLab/ABCD/code for submission testing run/SHAP Visualizations/parent")
 vertices <- read.csv("vertex_df.csv")
 connect <- read.csv("connections_df.csv")
 
@@ -56,7 +56,8 @@ p2 <- ggraph(mygraph, layout = "linear") +
     angle = 90,
     hjust = 1,
     size = 3,
-    alpha = 1
+    alpha = 1,
+    show.legend = FALSE
   ) 
   
 p2 <- p2 + scale_color_manual(values = color_list)
@@ -64,3 +65,4 @@ p2 <- p2 + scale_color_manual(values = color_list)
 # print(p2)
 
 ggsave("plot_highres.png", plot = p2, width = 12, height = 8, dpi = 600)
+

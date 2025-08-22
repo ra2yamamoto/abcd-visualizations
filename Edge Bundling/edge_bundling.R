@@ -4,7 +4,7 @@ library(igraph)
 
 # Read in dataframes specifying graph
 
-# setwd("...")
+setwd("/Users/Raphael/Desktop/GabLab/ABCD/code for submission testing run/Edge Bundling")
 hierarchy <- read.csv("hierarchy_df.csv")
 vertices = read.csv("vertex_df.csv")
 connect = read.csv("connections_df.csv")
@@ -151,3 +151,4 @@ p <- p + theme(legend.position = "none") # comment to show legend
 
 # print(p)
 ggsave("plot_highres.png", plot = p, width = 9, height = 9, dpi = 600)
+
